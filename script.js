@@ -14,6 +14,7 @@ const overlayRestartButton = document.getElementById("overlayRestartButton");
 const recordModal = document.getElementById("recordModal");
 const recordForm = document.getElementById("recordForm");
 const playerNameInput = document.getElementById("playerName");
+const dpadButtons = document.querySelectorAll(".dpad-button");
 
 const gridSize = 20;
 const logicalCanvasSize = 600;
@@ -37,6 +38,15 @@ const directionByKey = {
   d: { x: 1, y: 0 }
 };
 
+const directionByName = {
+  up: { x: 0, y: -1 },
+  down: { x: 0, y: 1 },
+  left: { x: -1, y: 0 },
+  right: { x: 1, y: 0 }
+};
+
+const swipeThreshold = 28;
+
 let snake;
 let collectible;
 let direction;
@@ -48,6 +58,7 @@ let turnLocked;
 let topScores = loadScores();
 let pendingScore = null;
 let animationFrame = null;
+let swipeStart = null;
 
 function configureCanvas() {
   const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
@@ -494,6 +505,10 @@ function handleKeydown(event) {
   if (!requestedDirection) return;
   event.preventDefault();
 
+  requestDirection(requestedDirection);
+}
+
+function requestDirection(requestedDirection) {
   if (isGameOver || turnLocked) return;
 
   const isOpposite = requestedDirection.x === -direction.x && requestedDirection.y === -direction.y;
@@ -503,8 +518,58 @@ function handleKeydown(event) {
   }
 }
 
+function handleDpadPointerDown(event) {
+  event.preventDefault();
+
+  const requestedDirection = directionByName[event.currentTarget.dataset.direction];
+  if (requestedDirection) requestDirection(requestedDirection);
+}
+
+function startSwipe(event) {
+  if (event.isPrimary === false || (event.pointerType === "mouse" && event.button !== 0)) return;
+
+  event.preventDefault();
+  swipeStart = {
+    pointerId: event.pointerId,
+    x: event.clientX,
+    y: event.clientY
+  };
+
+  if (canvas.setPointerCapture) canvas.setPointerCapture(event.pointerId);
+}
+
+function preventSwipeScroll(event) {
+  if (swipeStart && event.pointerId === swipeStart.pointerId) event.preventDefault();
+}
+
+function finishSwipe(event) {
+  if (!swipeStart || event.pointerId !== swipeStart.pointerId) return;
+
+  event.preventDefault();
+  const deltaX = event.clientX - swipeStart.x;
+  const deltaY = event.clientY - swipeStart.y;
+  swipeStart = null;
+
+  if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) < swipeThreshold) return;
+
+  if (Math.abs(deltaX) > Math.abs(deltaY)) {
+    requestDirection(deltaX > 0 ? directionByName.right : directionByName.left);
+  } else {
+    requestDirection(deltaY > 0 ? directionByName.down : directionByName.up);
+  }
+}
+
+function cancelSwipe(event) {
+  if (swipeStart && event.pointerId === swipeStart.pointerId) swipeStart = null;
+}
+
 document.addEventListener("keydown", handleKeydown);
 window.addEventListener("resize", configureCanvas);
+dpadButtons.forEach(button => button.addEventListener("pointerdown", handleDpadPointerDown));
+canvas.addEventListener("pointerdown", startSwipe, { passive: false });
+canvas.addEventListener("pointermove", preventSwipeScroll, { passive: false });
+canvas.addEventListener("pointerup", finishSwipe, { passive: false });
+canvas.addEventListener("pointercancel", cancelSwipe);
 restartButton.addEventListener("click", startGame);
 overlayRestartButton.addEventListener("click", startGame);
 recordForm.addEventListener("submit", submitRecord);
