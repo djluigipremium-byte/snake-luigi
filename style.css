@@ -268,6 +268,19 @@ canvas {
   list-style: none;
 }
 
+.leaderboard-status {
+  min-height: 1.15rem;
+  margin: 0.7rem 0 0;
+  color: #9ca8b9;
+  font-size: 0.7rem;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.leaderboard-status.is-unavailable {
+  color: #ffc37a;
+}
+
 .leaderboard-row {
   display: grid;
   grid-template-columns: 1.7rem minmax(0, 1fr) auto;

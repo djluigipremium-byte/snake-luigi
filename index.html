@@ -63,10 +63,11 @@
 
           <section class="panel-block leaderboard" aria-labelledby="leaderboard-title">
             <div class="panel-heading">
-              <p class="panel-label">Local legends</p>
+              <p class="panel-label">Global legends</p>
               <h2 id="leaderboard-title">Top 3</h2>
             </div>
             <ol id="leaderboardList" class="leaderboard-list"></ol>
+            <p id="leaderboardStatus" class="leaderboard-status" role="status">Класацията се зарежда…</p>
           </section>
 
           <button id="restartButton" class="restart-button" type="button">Restart</button>
@@ -83,10 +84,10 @@
       <p>Запиши име до 12 символа.</p>
       <label for="playerName">Име</label>
       <input id="playerName" name="playerName" type="text" maxlength="12" placeholder="Luigi" autocomplete="nickname">
-      <button type="submit">Запази рекорда</button>
+      <button id="recordSubmitButton" type="submit">Запази рекорда</button>
     </form>
   </div>
 
-  <script src="script.js"></script>
+  <script type="module" src="./script.js?v=5"></script>
 </body>
 </html>

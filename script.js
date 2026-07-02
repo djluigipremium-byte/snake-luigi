@@ -14,13 +14,30 @@ const overlayRestartButton = document.getElementById("overlayRestartButton");
 const recordModal = document.getElementById("recordModal");
 const recordForm = document.getElementById("recordForm");
 const playerNameInput = document.getElementById("playerName");
+const recordSubmitButton = document.getElementById("recordSubmitButton");
+const leaderboardStatusElement = document.getElementById("leaderboardStatus");
 const dpadButtons = document.querySelectorAll(".dpad-button");
 
 const gridSize = 20;
 const logicalCanvasSize = 600;
 const cellSize = logicalCanvasSize / gridSize;
 const tickRate = 110;
-const storageKey = "snakeLuigiTop3";
+const leaderboardWriteTimeout = 8000;
+
+const firebaseConfig = {
+  apiKey: "AIzaSyC8fMhl3rLU_TJHkQn-tj2o0FBAYz8n4kg",
+  authDomain: "snake-luigi.firebaseapp.com",
+  projectId: "snake-luigi",
+  storageBucket: "snake-luigi.firebasestorage.app",
+  messagingSenderId: "300518886492",
+  appId: "1:300518886492:web:73913c5c607e1816316a9"
+};
+
+const firebaseSdkUrls = {
+  app: "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js",
+  auth: "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js",
+  firestore: "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js"
+};
 
 const collectibleTypes = {
   mushroom: { label: "Червена гъбка", points: 10 },
@@ -55,10 +72,99 @@ let score;
 let gameLoop;
 let isGameOver;
 let turnLocked;
-let topScores = loadScores();
+let topScores = [];
 let pendingScore = null;
 let animationFrame = null;
 let swipeStart = null;
+let firebaseInitializationPromise = null;
+let firebaseUser = null;
+let leaderboardCollection = null;
+let firebaseApi = null;
+let leaderboardReady = false;
+let scoreSubmissionInProgress = false;
+
+function initializeOnlineLeaderboard() {
+  if (!firebaseInitializationPromise) {
+    firebaseInitializationPromise = connectToFirebase();
+  }
+
+  return firebaseInitializationPromise;
+}
+
+async function connectToFirebase() {
+  setLeaderboardStatus("Класацията се зарежда…");
+
+  try {
+    const [appModule, authModule, firestoreModule] = await Promise.all([
+      import(firebaseSdkUrls.app),
+      import(firebaseSdkUrls.auth),
+      import(firebaseSdkUrls.firestore)
+    ]);
+
+    const { initializeApp } = appModule;
+    const { getAuth, signInAnonymously } = authModule;
+    const {
+      getFirestore,
+      collection,
+      addDoc,
+      serverTimestamp,
+      query,
+      orderBy,
+      limit,
+      onSnapshot
+    } = firestoreModule;
+
+    const firebaseApp = initializeApp(firebaseConfig);
+    const auth = getAuth(firebaseApp);
+    const database = getFirestore(firebaseApp);
+    const credentials = await signInAnonymously(auth);
+
+    firebaseUser = credentials.user;
+    leaderboardCollection = collection(database, "leaderboard");
+    firebaseApi = { addDoc, serverTimestamp };
+
+    const leaderboardQuery = query(
+      leaderboardCollection,
+      orderBy("score", "desc"),
+      limit(3)
+    );
+
+    onSnapshot(
+      leaderboardQuery,
+      snapshot => {
+        topScores = snapshot.docs
+          .map(documentSnapshot => ({
+            id: documentSnapshot.id,
+            ...documentSnapshot.data()
+          }))
+          .filter(entry => typeof entry.name === "string" && Number.isInteger(entry.score))
+          .map(entry => ({
+            id: entry.id,
+            name: entry.name.trim().slice(0, 12) || "Luigi",
+            score: Math.max(0, entry.score)
+          }));
+
+        leaderboardReady = true;
+        renderLeaderboard();
+        updateBestScore();
+        setLeaderboardStatus("");
+      },
+      () => {
+        leaderboardReady = false;
+        setLeaderboardStatus("Онлайн класацията временно не е налична", true);
+      }
+    );
+  } catch {
+    leaderboardReady = false;
+    setLeaderboardStatus("Онлайн класацията временно не е налична", true);
+  }
+}
+
+function setLeaderboardStatus(message, isUnavailable = false) {
+  leaderboardStatusElement.textContent = message;
+  leaderboardStatusElement.hidden = message === "";
+  leaderboardStatusElement.classList.toggle("is-unavailable", isUnavailable);
+}
 
 function configureCanvas() {
   const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
@@ -416,34 +522,8 @@ function endGame() {
 }
 
 function qualifiesForTopThree(candidateScore) {
-  if (candidateScore <= 0) return false;
+  if (!leaderboardReady || candidateScore <= 0) return false;
   return topScores.length < 3 || candidateScore > topScores[topScores.length - 1].score;
-}
-
-function loadScores() {
-  try {
-    const storedScores = JSON.parse(localStorage.getItem(storageKey) || "[]");
-    if (!Array.isArray(storedScores)) return [];
-
-    return storedScores
-      .filter(entry => entry && Number.isFinite(Number(entry.score)))
-      .map(entry => ({
-        name: String(entry.name || "Luigi").trim().slice(0, 12) || "Luigi",
-        score: Math.max(0, Math.floor(Number(entry.score)))
-      }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 3);
-  } catch {
-    return [];
-  }
-}
-
-function saveScores() {
-  try {
-    localStorage.setItem(storageKey, JSON.stringify(topScores));
-  } catch {
-    // The game remains playable when browser storage is unavailable.
-  }
 }
 
 function renderLeaderboard() {
@@ -472,8 +552,7 @@ function renderLeaderboard() {
 }
 
 function updateBestScore() {
-  const savedBest = topScores[0]?.score || 0;
-  bestScoreElement.textContent = Math.max(savedBest, score || 0);
+  bestScoreElement.textContent = topScores[0]?.score || 0;
 }
 
 function hideRecordModal() {
@@ -481,21 +560,72 @@ function hideRecordModal() {
   recordModal.setAttribute("aria-hidden", "true");
 }
 
-function submitRecord(event) {
+async function submitRecord(event) {
   event.preventDefault();
-  if (pendingScore === null) return;
+  if (pendingScore === null || scoreSubmissionInProgress) return;
+
+  if (!leaderboardReady || !firebaseUser || !leaderboardCollection || !firebaseApi) {
+    pendingScore = null;
+    hideRecordModal();
+    setLeaderboardStatus("Онлайн класацията временно не е налична", true);
+    overlayRestartButton.focus();
+    return;
+  }
+
+  if (!qualifiesForTopThree(pendingScore)) {
+    pendingScore = null;
+    hideRecordModal();
+    overlayRestartButton.focus();
+    return;
+  }
 
   const playerName = playerNameInput.value.trim().slice(0, 12) || "Luigi";
-  topScores.push({ name: playerName, score: pendingScore });
-  topScores.sort((a, b) => b.score - a.score);
-  topScores = topScores.slice(0, 3);
-  pendingScore = null;
+  const submittedScore = Math.max(0, Math.floor(pendingScore));
+  scoreSubmissionInProgress = true;
+  recordSubmitButton.disabled = true;
+  recordSubmitButton.textContent = "Запазване…";
 
-  saveScores();
-  renderLeaderboard();
-  updateBestScore();
-  hideRecordModal();
-  overlayRestartButton.focus();
+  try {
+    const writePromise = firebaseApi.addDoc(leaderboardCollection, {
+      name: playerName,
+      score: submittedScore,
+      uid: firebaseUser.uid,
+      createdAt: firebaseApi.serverTimestamp()
+    });
+    const documentReference = await withTimeout(writePromise, leaderboardWriteTimeout);
+
+    if (!topScores.some(entry => entry.id === documentReference.id)) {
+      topScores = [
+        ...topScores,
+        { id: documentReference.id, name: playerName, score: submittedScore }
+      ]
+        .sort((first, second) => second.score - first.score)
+        .slice(0, 3);
+      renderLeaderboard();
+      updateBestScore();
+    }
+
+    setLeaderboardStatus("");
+  } catch {
+    setLeaderboardStatus("Онлайн класацията временно не е налична", true);
+  } finally {
+    pendingScore = null;
+    scoreSubmissionInProgress = false;
+    recordSubmitButton.disabled = false;
+    recordSubmitButton.textContent = "Запази рекорда";
+    hideRecordModal();
+    overlayRestartButton.focus();
+  }
+}
+
+function withTimeout(promise, duration) {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new Error("Leaderboard request timed out")), duration);
+  });
+
+  return Promise.race([promise, timeoutPromise])
+    .finally(() => window.clearTimeout(timeoutId));
 }
 
 function handleKeydown(event) {
@@ -577,3 +707,4 @@ recordForm.addEventListener("submit", submitRecord);
 configureCanvas();
 renderLeaderboard();
 startGame();
+initializeOnlineLeaderboard();
