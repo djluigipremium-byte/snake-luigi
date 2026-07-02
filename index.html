@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#080b12">
+  <title>Snake Luigi</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="game-shell">
+    <section class="game-card" aria-labelledby="game-title">
+      <header class="game-header">
+        <div>
+          <p class="eyebrow">Retro arcade</p>
+          <h1 id="game-title">Snake Luigi</h1>
+        </div>
+
+        <div class="stats" aria-live="polite">
+          <div class="stat-box">
+            <span>Score</span>
+            <strong id="score">0</strong>
+          </div>
+          <div class="stat-box stat-box--best">
+            <span>Best Score</span>
+            <strong id="bestScore">0</strong>
+          </div>
+        </div>
+      </header>
+
+      <div class="game-layout">
+        <div class="play-column">
+          <div class="board-wrap">
+            <canvas id="gameCanvas" width="600" height="600" aria-label="Игрално поле на Snake Luigi"></canvas>
+
+            <div class="game-over" id="gameOver" aria-hidden="true">
+              <p class="eyebrow">Край на играта</p>
+              <h2>Game Over</h2>
+              <p>Твоят резултат: <strong id="finalScore">0</strong></p>
+              <button id="overlayRestartButton" type="button">Restart</button>
+            </div>
+          </div>
+
+          <p class="controls">
+            Управление: <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd>
+            или <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd>
+          </p>
+        </div>
+
+        <aside class="side-panel" aria-label="Статистика и рекорди">
+          <section class="panel-block last-item">
+            <p class="panel-label">Последно събрано</p>
+            <strong id="lastCollectible">—</strong>
+            <span id="lastPoints">Събери гъбка или звезда</span>
+          </section>
+
+          <section class="panel-block leaderboard" aria-labelledby="leaderboard-title">
+            <div class="panel-heading">
+              <p class="panel-label">Local legends</p>
+              <h2 id="leaderboard-title">Top 3</h2>
+            </div>
+            <ol id="leaderboardList" class="leaderboard-list"></ol>
+          </section>
+
+          <button id="restartButton" class="restart-button" type="button">Restart</button>
+          <p class="wrap-hint">Стените са портали — премини през тях.</p>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <div class="record-modal" id="recordModal" role="dialog" aria-modal="true" aria-labelledby="record-title" aria-hidden="true">
+    <form id="recordForm" class="record-card">
+      <p class="eyebrow">Нов рекорд</p>
+      <h2 id="record-title">Влизаш в Top 3!</h2>
+      <p>Запиши име до 12 символа.</p>
+      <label for="playerName">Име</label>
+      <input id="playerName" name="playerName" type="text" maxlength="12" placeholder="Luigi" autocomplete="nickname">
+      <button type="submit">Запази рекорда</button>
+    </form>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
