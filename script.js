@@ -21,7 +21,9 @@ const leaderboardStatusElement = document.getElementById("leaderboardStatus");
 const leaderboardRetryElement = document.getElementById("leaderboardRetry");
 const leaderboardRetryButton = document.getElementById("leaderboardRetryButton");
 const leaderboardNoticeElement = document.getElementById("leaderboardNotice");
+const firebaseDebugStatusElement = document.getElementById("firebaseDebugStatus");
 const dpadButtons = document.querySelectorAll(".dpad-button");
+const firebaseDebugEnabled = new URLSearchParams(window.location.search).get("debugFirebase") === "1";
 
 const gridSize = 20;
 const logicalCanvasSize = 600;
@@ -31,12 +33,12 @@ const leaderboardWriteTimeout = 8000;
 const leaderboardReadyTimeout = 6000;
 
 const firebaseConfig = {
-  apiKey: "AIzaSyC8fMhl3rLU_TJHkQn-tj2o0FBAYz8n4kg",
+  apiKey: "AIzaSyC8fMhl3rLU_TJHkQn-tj2oOFBAYz8n4kg",
   authDomain: "snake-luigi.firebaseapp.com",
   projectId: "snake-luigi",
   storageBucket: "snake-luigi.firebasestorage.app",
   messagingSenderId: "300518886492",
-  appId: "1:300518886492:web:73913c5c607e1816316a9"
+  appId: "1:300518886492:web:73913c5c607e1816316a99"
 };
 
 const firebaseSdkUrls = {
@@ -103,6 +105,12 @@ let pendingScoreSessionId = null;
 let pendingQualification = null;
 let qualificationCheckToken = 0;
 let leaderboardNoticeTimer = null;
+const firebaseDebugState = {
+  modules: "pending",
+  auth: "pending",
+  listener: "pending",
+  error: null
+};
 
 function initializeOnlineLeaderboard(forceReconnect = false) {
   if (!forceReconnect && firebaseInitializationPromise) {
@@ -117,20 +125,31 @@ function initializeOnlineLeaderboard(forceReconnect = false) {
 
   const attemptId = ++firebaseConnectionAttempt;
   leaderboardReady = false;
+  if (forceReconnect) hideLeaderboardRetry();
+  updateFirebaseDebug({
+    modules: firebaseApi ? "loaded" : "pending",
+    auth: firebaseUser ? "ready" : "pending",
+    listener: "pending",
+    error: null
+  });
   setLeaderboardStatus("Свързване с онлайн класацията…");
   firebaseInitializationPromise = connectToFirebase(attemptId);
   return firebaseInitializationPromise;
 }
 
 async function connectToFirebase(attemptId) {
+  let connectionStage = "modules";
+
   try {
     firebaseApi = await loadFirebaseModules();
     if (attemptId !== firebaseConnectionAttempt) return;
+    updateFirebaseDebug({ modules: "loaded" });
 
     if (!firebaseApp) firebaseApp = firebaseApi.initializeApp(firebaseConfig);
     if (!firebaseAuth) firebaseAuth = firebaseApi.getAuth(firebaseApp);
     if (!firebaseDatabase) firebaseDatabase = firebaseApi.getFirestore(firebaseApp);
 
+    connectionStage = "auth";
     if (firebaseAuth.currentUser) {
       firebaseUser = firebaseAuth.currentUser;
     } else {
@@ -138,8 +157,11 @@ async function connectToFirebase(attemptId) {
       if (attemptId !== firebaseConnectionAttempt) return;
       firebaseUser = credentials.user;
     }
+    updateFirebaseDebug({ auth: "ready" });
 
-    leaderboardCollection = firebaseApi.collection(firebaseDatabase, "leaderboard");
+    connectionStage = "listener";
+    const { collection } = firebaseApi;
+    leaderboardCollection = collection(firebaseDatabase, "leaderboard");
 
     const leaderboardQuery = firebaseApi.query(
       leaderboardCollection,
@@ -147,6 +169,8 @@ async function connectToFirebase(attemptId) {
       firebaseApi.limit(3)
     );
 
+    leaderboardListenerActive = true;
+    updateFirebaseDebug({ listener: "active" });
     leaderboardUnsubscribe = firebaseApi.onSnapshot(
       leaderboardQuery,
       snapshot => {
@@ -166,6 +190,7 @@ async function connectToFirebase(attemptId) {
 
         leaderboardReady = true;
         leaderboardListenerActive = true;
+        updateFirebaseDebug({ listener: "active", error: null });
         renderLeaderboard();
         updateBestScore();
         setLeaderboardStatus("Онлайн класацията е готова");
@@ -176,24 +201,31 @@ async function connectToFirebase(attemptId) {
       error => {
         if (attemptId !== firebaseConnectionAttempt) return;
 
-        console.error("Firebase leaderboard listener failed:", error);
+        console.error("Firebase listener failed:", error);
         leaderboardReady = false;
         leaderboardListenerActive = false;
+        leaderboardUnsubscribe = null;
         firebaseInitializationPromise = null;
+        updateFirebaseDebug({ listener: "failed", error });
         setLeaderboardStatus("Онлайн класацията временно не е налична");
+        showLeaderboardRetry();
       }
     );
 
-    leaderboardListenerActive = true;
   } catch (error) {
     if (attemptId !== firebaseConnectionAttempt) return;
 
-    console.error("Firebase leaderboard connection failed:", error);
+    console.error("Firebase connection failed:", error);
     leaderboardReady = false;
     leaderboardListenerActive = false;
     firebaseInitializationPromise = null;
     if (!firebaseApi) firebaseModulesPromise = null;
+    updateFirebaseDebug({
+      [connectionStage]: "failed",
+      error
+    });
     setLeaderboardStatus("Онлайн класацията временно не е налична");
+    showLeaderboardRetry();
   }
 }
 
@@ -228,6 +260,29 @@ function setLeaderboardStatus(message) {
     "is-unavailable",
     message === "Онлайн класацията временно не е налична"
   );
+}
+
+function updateFirebaseDebug(updates) {
+  Object.assign(firebaseDebugState, updates);
+  if (!firebaseDebugEnabled) {
+    firebaseDebugStatusElement.hidden = true;
+    return;
+  }
+
+  const lines = [
+    `Firebase modules ${firebaseDebugState.modules}`,
+    `Anonymous auth ${firebaseDebugState.auth}`,
+    `Firestore listener ${firebaseDebugState.listener}`
+  ];
+
+  if (firebaseDebugState.error) {
+    const errorCode = firebaseDebugState.error.code || "unknown";
+    const errorMessage = firebaseDebugState.error.message || String(firebaseDebugState.error);
+    lines.push(`Error: ${errorCode} — ${errorMessage}`);
+  }
+
+  firebaseDebugStatusElement.textContent = lines.join("\n");
+  firebaseDebugStatusElement.hidden = false;
 }
 
 function waitForLeaderboardReady(duration = leaderboardReadyTimeout) {
@@ -787,10 +842,10 @@ async function submitRecord(event) {
   clearRecordError();
 
   try {
-    if (!leaderboardReady || !firebaseUser || !firebaseDatabase || !firebaseApi) {
+    if (!leaderboardReady || !firebaseUser || !leaderboardCollection || !firebaseApi) {
       initializeOnlineLeaderboard();
       const isReady = await waitForLeaderboardReady();
-      if (!isReady || !firebaseUser || !firebaseDatabase || !firebaseApi) {
+      if (!isReady || !firebaseUser || !leaderboardCollection || !firebaseApi) {
         const readinessError = new Error("Firebase leaderboard was not ready within 6 seconds");
         readinessError.name = "LeaderboardReadinessError";
         throw readinessError;
@@ -806,7 +861,7 @@ async function submitRecord(event) {
 
     if (!activeScoreWritePromise) {
       activeScoreWritePromise = firebaseApi.addDoc(
-        firebaseApi.collection(firebaseDatabase, "leaderboard"),
+        leaderboardCollection,
         {
           name: playerName,
           score: submittedScore,
@@ -940,7 +995,19 @@ recordForm.addEventListener("submit", submitRecord);
 recordCancelButton.addEventListener("click", cancelRecordSubmission);
 leaderboardRetryButton.addEventListener("click", retryOnlineLeaderboard);
 
-configureCanvas();
-renderLeaderboard();
-startGame();
-initializeOnlineLeaderboard();
+let pageInitialized = false;
+
+function initializePage() {
+  if (pageInitialized) return;
+  pageInitialized = true;
+  configureCanvas();
+  renderLeaderboard();
+  startGame();
+  initializeOnlineLeaderboard();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initializePage, { once: true });
+} else {
+  initializePage();
+}

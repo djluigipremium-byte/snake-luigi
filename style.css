@@ -305,6 +305,15 @@ canvas {
   color: #75f1c4;
 }
 
+.firebase-debug-status {
+  margin: 0.65rem 0 0;
+  color: #8fa0b5;
+  font-size: 0.62rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
 .leaderboard-row {
   display: grid;
   grid-template-columns: 1.7rem minmax(0, 1fr) auto;
