@@ -15,7 +15,12 @@ const recordModal = document.getElementById("recordModal");
 const recordForm = document.getElementById("recordForm");
 const playerNameInput = document.getElementById("playerName");
 const recordSubmitButton = document.getElementById("recordSubmitButton");
+const recordCancelButton = document.getElementById("recordCancelButton");
+const recordErrorElement = document.getElementById("recordError");
 const leaderboardStatusElement = document.getElementById("leaderboardStatus");
+const leaderboardRetryElement = document.getElementById("leaderboardRetry");
+const leaderboardRetryButton = document.getElementById("leaderboardRetryButton");
+const leaderboardNoticeElement = document.getElementById("leaderboardNotice");
 const dpadButtons = document.querySelectorAll(".dpad-button");
 
 const gridSize = 20;
@@ -23,6 +28,7 @@ const logicalCanvasSize = 600;
 const cellSize = logicalCanvasSize / gridSize;
 const tickRate = 110;
 const leaderboardWriteTimeout = 8000;
+const leaderboardReadyTimeout = 6000;
 
 const firebaseConfig = {
   apiKey: "AIzaSyC8fMhl3rLU_TJHkQn-tj2o0FBAYz8n4kg",
@@ -77,61 +83,75 @@ let pendingScore = null;
 let animationFrame = null;
 let swipeStart = null;
 let firebaseInitializationPromise = null;
+let firebaseModulesPromise = null;
+let firebaseApp = null;
+let firebaseAuth = null;
+let firebaseDatabase = null;
 let firebaseUser = null;
 let leaderboardCollection = null;
 let firebaseApi = null;
 let leaderboardReady = false;
+let leaderboardListenerActive = false;
+let leaderboardUnsubscribe = null;
+let firebaseConnectionAttempt = 0;
+let leaderboardReadyWaiters = new Set();
 let scoreSubmissionInProgress = false;
+let activeScoreWritePromise = null;
+let gameSessionId = 0;
+let gameOverResultSaved = false;
+let pendingScoreSessionId = null;
+let pendingQualification = null;
+let qualificationCheckToken = 0;
+let leaderboardNoticeTimer = null;
 
-function initializeOnlineLeaderboard() {
-  if (!firebaseInitializationPromise) {
-    firebaseInitializationPromise = connectToFirebase();
+function initializeOnlineLeaderboard(forceReconnect = false) {
+  if (!forceReconnect && firebaseInitializationPromise) {
+    return firebaseInitializationPromise;
   }
 
+  if (forceReconnect && leaderboardUnsubscribe) {
+    leaderboardUnsubscribe();
+    leaderboardUnsubscribe = null;
+    leaderboardListenerActive = false;
+  }
+
+  const attemptId = ++firebaseConnectionAttempt;
+  leaderboardReady = false;
+  setLeaderboardStatus("Свързване с онлайн класацията…");
+  firebaseInitializationPromise = connectToFirebase(attemptId);
   return firebaseInitializationPromise;
 }
 
-async function connectToFirebase() {
-  setLeaderboardStatus("Класацията се зарежда…");
-
+async function connectToFirebase(attemptId) {
   try {
-    const [appModule, authModule, firestoreModule] = await Promise.all([
-      import(firebaseSdkUrls.app),
-      import(firebaseSdkUrls.auth),
-      import(firebaseSdkUrls.firestore)
-    ]);
+    firebaseApi = await loadFirebaseModules();
+    if (attemptId !== firebaseConnectionAttempt) return;
 
-    const { initializeApp } = appModule;
-    const { getAuth, signInAnonymously } = authModule;
-    const {
-      getFirestore,
-      collection,
-      addDoc,
-      serverTimestamp,
-      query,
-      orderBy,
-      limit,
-      onSnapshot
-    } = firestoreModule;
+    if (!firebaseApp) firebaseApp = firebaseApi.initializeApp(firebaseConfig);
+    if (!firebaseAuth) firebaseAuth = firebaseApi.getAuth(firebaseApp);
+    if (!firebaseDatabase) firebaseDatabase = firebaseApi.getFirestore(firebaseApp);
 
-    const firebaseApp = initializeApp(firebaseConfig);
-    const auth = getAuth(firebaseApp);
-    const database = getFirestore(firebaseApp);
-    const credentials = await signInAnonymously(auth);
+    if (firebaseAuth.currentUser) {
+      firebaseUser = firebaseAuth.currentUser;
+    } else {
+      const credentials = await firebaseApi.signInAnonymously(firebaseAuth);
+      if (attemptId !== firebaseConnectionAttempt) return;
+      firebaseUser = credentials.user;
+    }
 
-    firebaseUser = credentials.user;
-    leaderboardCollection = collection(database, "leaderboard");
-    firebaseApi = { addDoc, serverTimestamp };
+    leaderboardCollection = firebaseApi.collection(firebaseDatabase, "leaderboard");
 
-    const leaderboardQuery = query(
+    const leaderboardQuery = firebaseApi.query(
       leaderboardCollection,
-      orderBy("score", "desc"),
-      limit(3)
+      firebaseApi.orderBy("score", "desc"),
+      firebaseApi.limit(3)
     );
 
-    onSnapshot(
+    leaderboardUnsubscribe = firebaseApi.onSnapshot(
       leaderboardQuery,
       snapshot => {
+        if (attemptId !== firebaseConnectionAttempt) return;
+
         topScores = snapshot.docs
           .map(documentSnapshot => ({
             id: documentSnapshot.id,
@@ -145,25 +165,127 @@ async function connectToFirebase() {
           }));
 
         leaderboardReady = true;
+        leaderboardListenerActive = true;
         renderLeaderboard();
         updateBestScore();
-        setLeaderboardStatus("");
+        setLeaderboardStatus("Онлайн класацията е готова");
+        hideLeaderboardRetry();
+        notifyLeaderboardReady();
+        evaluatePendingQualification();
       },
-      () => {
+      error => {
+        if (attemptId !== firebaseConnectionAttempt) return;
+
+        console.error("Firebase leaderboard listener failed:", error);
         leaderboardReady = false;
-        setLeaderboardStatus("Онлайн класацията временно не е налична", true);
+        leaderboardListenerActive = false;
+        firebaseInitializationPromise = null;
+        setLeaderboardStatus("Онлайн класацията временно не е налична");
       }
     );
-  } catch {
+
+    leaderboardListenerActive = true;
+  } catch (error) {
+    if (attemptId !== firebaseConnectionAttempt) return;
+
+    console.error("Firebase leaderboard connection failed:", error);
     leaderboardReady = false;
-    setLeaderboardStatus("Онлайн класацията временно не е налична", true);
+    leaderboardListenerActive = false;
+    firebaseInitializationPromise = null;
+    if (!firebaseApi) firebaseModulesPromise = null;
+    setLeaderboardStatus("Онлайн класацията временно не е налична");
   }
 }
 
-function setLeaderboardStatus(message, isUnavailable = false) {
+function loadFirebaseModules() {
+  if (!firebaseModulesPromise) {
+    firebaseModulesPromise = Promise.all([
+      import(firebaseSdkUrls.app),
+      import(firebaseSdkUrls.auth),
+      import(firebaseSdkUrls.firestore)
+    ]).then(([appModule, authModule, firestoreModule]) => ({
+      initializeApp: appModule.initializeApp,
+      getAuth: authModule.getAuth,
+      signInAnonymously: authModule.signInAnonymously,
+      getFirestore: firestoreModule.getFirestore,
+      collection: firestoreModule.collection,
+      addDoc: firestoreModule.addDoc,
+      serverTimestamp: firestoreModule.serverTimestamp,
+      query: firestoreModule.query,
+      orderBy: firestoreModule.orderBy,
+      limit: firestoreModule.limit,
+      onSnapshot: firestoreModule.onSnapshot
+    }));
+  }
+
+  return firebaseModulesPromise;
+}
+
+function setLeaderboardStatus(message) {
   leaderboardStatusElement.textContent = message;
-  leaderboardStatusElement.hidden = message === "";
-  leaderboardStatusElement.classList.toggle("is-unavailable", isUnavailable);
+  leaderboardStatusElement.hidden = false;
+  leaderboardStatusElement.classList.toggle(
+    "is-unavailable",
+    message === "Онлайн класацията временно не е налична"
+  );
+}
+
+function waitForLeaderboardReady(duration = leaderboardReadyTimeout) {
+  if (leaderboardReady && firebaseUser && leaderboardListenerActive) {
+    return Promise.resolve(true);
+  }
+
+  return new Promise(resolve => {
+    let timeoutId;
+    const finish = isReady => {
+      window.clearTimeout(timeoutId);
+      leaderboardReadyWaiters.delete(markReady);
+      resolve(isReady);
+    };
+    const markReady = () => finish(true);
+
+    leaderboardReadyWaiters.add(markReady);
+    timeoutId = window.setTimeout(() => finish(false), duration);
+  });
+}
+
+function notifyLeaderboardReady() {
+  [...leaderboardReadyWaiters].forEach(markReady => markReady());
+}
+
+function showLeaderboardRetry() {
+  leaderboardRetryElement.hidden = false;
+}
+
+function hideLeaderboardRetry() {
+  leaderboardRetryElement.hidden = true;
+}
+
+function showLeaderboardNotice(message) {
+  window.clearTimeout(leaderboardNoticeTimer);
+  leaderboardNoticeElement.textContent = message;
+  leaderboardNoticeElement.hidden = false;
+  leaderboardNoticeTimer = window.setTimeout(() => {
+    leaderboardNoticeElement.hidden = true;
+  }, 3500);
+}
+
+async function retryOnlineLeaderboard() {
+  hideLeaderboardRetry();
+  initializeOnlineLeaderboard(true);
+
+  if (!pendingQualification) return;
+
+  const token = ++qualificationCheckToken;
+  const isReady = await waitForLeaderboardReady();
+  if (token !== qualificationCheckToken || !pendingQualification) return;
+
+  if (isReady) {
+    evaluatePendingQualification();
+  } else {
+    setLeaderboardStatus("Онлайн класацията временно не е налична");
+    showLeaderboardRetry();
+  }
 }
 
 function configureCanvas() {
@@ -183,6 +305,8 @@ function configureCanvas() {
 
 function startGame() {
   clearInterval(gameLoop);
+  gameSessionId += 1;
+  qualificationCheckToken += 1;
 
   snake = [
     { x: 10, y: 10 },
@@ -195,6 +319,11 @@ function startGame() {
   isGameOver = false;
   turnLocked = false;
   pendingScore = null;
+  pendingScoreSessionId = null;
+  pendingQualification = null;
+  gameOverResultSaved = false;
+  scoreSubmissionInProgress = false;
+  activeScoreWritePromise = null;
   collectible = createCollectible();
 
   scoreElement.textContent = score;
@@ -204,6 +333,11 @@ function startGame() {
   gameOverElement.classList.remove("is-visible");
   gameOverElement.setAttribute("aria-hidden", "true");
   hideRecordModal();
+  hideLeaderboardRetry();
+  clearRecordError();
+  recordSubmitButton.disabled = false;
+  recordCancelButton.disabled = false;
+  recordSubmitButton.textContent = "Запази рекорда";
 
   gameLoop = setInterval(update, tickRate);
 
@@ -510,12 +644,51 @@ function endGame() {
   gameOverElement.classList.add("is-visible");
   gameOverElement.setAttribute("aria-hidden", "false");
 
-  if (qualifiesForTopThree(score)) {
-    pendingScore = score;
-    recordModal.classList.add("is-visible");
-    recordModal.setAttribute("aria-hidden", "false");
-    playerNameInput.value = "";
-    playerNameInput.focus();
+  if (score <= 0) {
+    overlayRestartButton.focus();
+    return;
+  }
+
+  beginQualificationCheck(score, gameSessionId);
+}
+
+async function beginQualificationCheck(candidateScore, sessionId) {
+  pendingQualification = { score: Math.floor(candidateScore), sessionId };
+
+  if (leaderboardReady) {
+    evaluatePendingQualification();
+    return;
+  }
+
+  initializeOnlineLeaderboard();
+  const token = ++qualificationCheckToken;
+  const isReady = await waitForLeaderboardReady();
+
+  if (token !== qualificationCheckToken || !pendingQualification) return;
+  if (pendingQualification.sessionId !== gameSessionId || !isGameOver) return;
+
+  if (isReady) {
+    evaluatePendingQualification();
+  } else {
+    setLeaderboardStatus("Онлайн класацията временно не е налична");
+    showLeaderboardRetry();
+  }
+}
+
+function evaluatePendingQualification() {
+  if (!leaderboardReady || !pendingQualification) return;
+
+  const qualification = pendingQualification;
+  if (qualification.sessionId !== gameSessionId || !isGameOver) {
+    pendingQualification = null;
+    return;
+  }
+
+  pendingQualification = null;
+  hideLeaderboardRetry();
+
+  if (qualifiesForTopThree(qualification.score)) {
+    openRecordModal(qualification.score, qualification.sessionId);
   } else {
     overlayRestartButton.focus();
   }
@@ -523,7 +696,8 @@ function endGame() {
 
 function qualifiesForTopThree(candidateScore) {
   if (!leaderboardReady || candidateScore <= 0) return false;
-  return topScores.length < 3 || candidateScore > topScores[topScores.length - 1].score;
+  if (topScores.length < 3) return true;
+  return candidateScore > topScores[2].score;
 }
 
 function renderLeaderboard() {
@@ -560,39 +734,90 @@ function hideRecordModal() {
   recordModal.setAttribute("aria-hidden", "true");
 }
 
+function openRecordModal(candidateScore, sessionId) {
+  pendingScore = Math.floor(candidateScore);
+  pendingScoreSessionId = sessionId;
+  gameOverResultSaved = false;
+  activeScoreWritePromise = null;
+  playerNameInput.value = "";
+  clearRecordError();
+  recordSubmitButton.disabled = false;
+  recordCancelButton.disabled = false;
+  recordModal.classList.add("is-visible");
+  recordModal.setAttribute("aria-hidden", "false");
+  playerNameInput.focus();
+}
+
+function clearRecordError() {
+  recordErrorElement.textContent = "";
+  recordErrorElement.hidden = true;
+}
+
+function showRecordError(message) {
+  recordErrorElement.textContent = message;
+  recordErrorElement.hidden = false;
+}
+
+function cancelRecordSubmission() {
+  if (scoreSubmissionInProgress) return;
+
+  pendingScore = null;
+  pendingScoreSessionId = null;
+  activeScoreWritePromise = null;
+  clearRecordError();
+  hideRecordModal();
+  overlayRestartButton.focus();
+}
+
 async function submitRecord(event) {
   event.preventDefault();
-  if (pendingScore === null || scoreSubmissionInProgress) return;
-
-  if (!leaderboardReady || !firebaseUser || !leaderboardCollection || !firebaseApi) {
-    pendingScore = null;
-    hideRecordModal();
-    setLeaderboardStatus("Онлайн класацията временно не е налична", true);
-    overlayRestartButton.focus();
-    return;
-  }
-
-  if (!qualifiesForTopThree(pendingScore)) {
-    pendingScore = null;
-    hideRecordModal();
-    overlayRestartButton.focus();
-    return;
-  }
+  if (
+    pendingScore === null ||
+    scoreSubmissionInProgress ||
+    gameOverResultSaved ||
+    pendingScoreSessionId !== gameSessionId
+  ) return;
 
   const playerName = playerNameInput.value.trim().slice(0, 12) || "Luigi";
   const submittedScore = Math.max(0, Math.floor(pendingScore));
   scoreSubmissionInProgress = true;
   recordSubmitButton.disabled = true;
+  recordCancelButton.disabled = true;
   recordSubmitButton.textContent = "Запазване…";
+  clearRecordError();
 
   try {
-    const writePromise = firebaseApi.addDoc(leaderboardCollection, {
-      name: playerName,
-      score: submittedScore,
-      uid: firebaseUser.uid,
-      createdAt: firebaseApi.serverTimestamp()
-    });
-    const documentReference = await withTimeout(writePromise, leaderboardWriteTimeout);
+    if (!leaderboardReady || !firebaseUser || !firebaseDatabase || !firebaseApi) {
+      initializeOnlineLeaderboard();
+      const isReady = await waitForLeaderboardReady();
+      if (!isReady || !firebaseUser || !firebaseDatabase || !firebaseApi) {
+        const readinessError = new Error("Firebase leaderboard was not ready within 6 seconds");
+        readinessError.name = "LeaderboardReadinessError";
+        throw readinessError;
+      }
+    }
+
+    if (pendingScoreSessionId !== gameSessionId || gameOverResultSaved) return;
+
+    if (!activeScoreWritePromise && !qualifiesForTopThree(submittedScore)) {
+      showRecordError("Резултатът вече не влиза в глобалния Top 3.");
+      return;
+    }
+
+    if (!activeScoreWritePromise) {
+      activeScoreWritePromise = firebaseApi.addDoc(
+        firebaseApi.collection(firebaseDatabase, "leaderboard"),
+        {
+          name: playerName,
+          score: submittedScore,
+          uid: firebaseUser.uid,
+          createdAt: firebaseApi.serverTimestamp()
+        }
+      );
+    }
+
+    const documentReference = await withTimeout(activeScoreWritePromise, leaderboardWriteTimeout);
+    gameOverResultSaved = true;
 
     if (!topScores.some(entry => entry.id === documentReference.id)) {
       topScores = [
@@ -605,23 +830,32 @@ async function submitRecord(event) {
       updateBestScore();
     }
 
-    setLeaderboardStatus("");
-  } catch {
-    setLeaderboardStatus("Онлайн класацията временно не е налична", true);
-  } finally {
     pendingScore = null;
+    pendingScoreSessionId = null;
+    hideRecordModal();
+    setLeaderboardStatus("Онлайн класацията е готова");
+    showLeaderboardNotice("Рекордът е записан онлайн");
+    overlayRestartButton.focus();
+  } catch (error) {
+    console.error("Firebase leaderboard write failed:", error);
+    if (error.name !== "LeaderboardTimeoutError") activeScoreWritePromise = null;
+    showRecordError("Неуспешен запис. Провери интернет връзката и натисни „Запази“ отново.");
+  } finally {
     scoreSubmissionInProgress = false;
     recordSubmitButton.disabled = false;
+    recordCancelButton.disabled = false;
     recordSubmitButton.textContent = "Запази рекорда";
-    hideRecordModal();
-    overlayRestartButton.focus();
   }
 }
 
 function withTimeout(promise, duration) {
   let timeoutId;
   const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = window.setTimeout(() => reject(new Error("Leaderboard request timed out")), duration);
+    timeoutId = window.setTimeout(() => {
+      const timeoutError = new Error("Leaderboard request timed out");
+      timeoutError.name = "LeaderboardTimeoutError";
+      reject(timeoutError);
+    }, duration);
   });
 
   return Promise.race([promise, timeoutPromise])
@@ -703,6 +937,8 @@ canvas.addEventListener("pointercancel", cancelSwipe);
 restartButton.addEventListener("click", startGame);
 overlayRestartButton.addEventListener("click", startGame);
 recordForm.addEventListener("submit", submitRecord);
+recordCancelButton.addEventListener("click", cancelRecordSubmission);
+leaderboardRetryButton.addEventListener("click", retryOnlineLeaderboard);
 
 configureCanvas();
 renderLeaderboard();

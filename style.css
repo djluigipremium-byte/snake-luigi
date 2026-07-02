@@ -281,6 +281,30 @@ canvas {
   color: #ffc37a;
 }
 
+.leaderboard-retry,
+.leaderboard-notice {
+  margin-top: 0.65rem;
+  text-align: center;
+}
+
+.leaderboard-retry p,
+.leaderboard-notice {
+  margin-bottom: 0.55rem;
+  color: #ffc37a;
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
+.leaderboard-retry button {
+  min-height: 34px;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.68rem;
+}
+
+.leaderboard-notice {
+  color: #75f1c4;
+}
+
 .leaderboard-row {
   display: grid;
   grid-template-columns: 1.7rem minmax(0, 1fr) auto;
@@ -472,6 +496,25 @@ kbd {
 
 .record-card button {
   width: 100%;
+}
+
+.record-error {
+  margin: 0 0 0.8rem;
+  color: #ffc37a;
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.record-actions {
+  display: grid;
+  grid-template-columns: 1fr 0.72fr;
+  gap: 0.65rem;
+}
+
+.record-cancel-button {
+  background: #293544;
+  color: #e6ecf5;
+  box-shadow: 0 5px 0 #111923, 0 11px 26px rgba(0, 0, 0, 0.18);
 }
 
 @media (max-width: 820px) {

@@ -67,7 +67,12 @@
               <h2 id="leaderboard-title">Top 3</h2>
             </div>
             <ol id="leaderboardList" class="leaderboard-list"></ol>
-            <p id="leaderboardStatus" class="leaderboard-status" role="status">Класацията се зарежда…</p>
+            <p id="leaderboardStatus" class="leaderboard-status" role="status">Свързване с онлайн класацията…</p>
+            <div id="leaderboardRetry" class="leaderboard-retry" hidden>
+              <p>Онлайн класацията не е готова. Натисни „Опитай отново“.</p>
+              <button id="leaderboardRetryButton" type="button">Опитай отново</button>
+            </div>
+            <p id="leaderboardNotice" class="leaderboard-notice" role="status" hidden></p>
           </section>
 
           <button id="restartButton" class="restart-button" type="button">Restart</button>
@@ -84,10 +89,14 @@
       <p>Запиши име до 12 символа.</p>
       <label for="playerName">Име</label>
       <input id="playerName" name="playerName" type="text" maxlength="12" placeholder="Luigi" autocomplete="nickname">
-      <button id="recordSubmitButton" type="submit">Запази рекорда</button>
+      <p id="recordError" class="record-error" role="alert" hidden></p>
+      <div class="record-actions">
+        <button id="recordSubmitButton" type="submit">Запази рекорда</button>
+        <button id="recordCancelButton" class="record-cancel-button" type="button">Cancel</button>
+      </div>
     </form>
   </div>
 
-  <script type="module" src="./script.js?v=5"></script>
+  <script type="module" src="./script.js?v=6"></script>
 </body>
 </html>
